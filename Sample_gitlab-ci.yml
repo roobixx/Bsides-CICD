@@ -1,0 +1,87 @@
+variables:
+    BUILD_DIR: '${CI_PROJECT_DIR}'
+stages:
+  - runner
+  - update
+  - copy
+  - cloak
+  - build
+  - test-defender
+  - execute
+  - elk
+
+runner:
+  stage: runner
+  script:
+    - '$PSVersionTable'
+    - 'Get-MpComputerStatus'
+    - 'Get-Host'
+    - 'python --version'
+    - 'msbuild --version'
+    - 'nuget | findstr "Version"'
+    - 'deps\nuget.exe | findstr "Version"'
+    - 'dotnet --info'
+    - 'Write-Host Completed'
+
+
+update:
+  stage: update
+  script:
+    - Set-Location C:\DEV\CICE\repos
+    - foreach ($i in Get-ChildItem .) { Set-Location C:\DEV\CICE\repos\$i; git pull}
+
+copy:
+  stage: copy
+  script:
+    - Set-Location C:\DEV\CICE\repos
+    - Remove-Item -Recurse ..\output\* -Force
+    - foreach ($i in Get-ChildItem .) { Copy-Item -Recurse $i ..\output\$i}
+    - foreach ($i in Get-ChildItem .) { foreach ($m in "base64", "rot13", "reverse") { Copy-Item -Recurse $i ..\output\$i-$(if($m -eq 'base64') { $m -replace 'base64', 'b64'}if($m -eq 'reverse'){$m -replace "reverse","rev"}if($m -eq 'rot13'){$m -replace "rot13", "r13"})}}
+
+cloak:
+  stage: cloak
+  script:
+    - Set-Location C:\DEV\CICE\output
+    - foreach ($i in Get-ChildItem C:\DEV\CICE\output\ | Where-Object { $_.name -match "-r13" }) { Set-Location C:\DEV\Build_Tools\python; .\python.exe C:\DEV\CICE\cloak.py -d C:\DEV\CICE\output\$i -n $(-join ((65..90) + (97..122) | Get-Random -Count 8 | % {[char]$_})) -m rot13 }
+    - foreach ($i in Get-ChildItem C:\DEV\CICE\output\ | Where-Object { $_.name -match "-rev" }) { Set-Location C:\DEV\Build_Tools\python; .\python.exe C:\DEV\CICE\cloak.py -d C:\DEV\CICE\output\$i -n $(-join ((65..90) + (97..122) | Get-Random -Count 8 | % {[char]$_})) -m reverse }
+    - foreach ($i in Get-ChildItem C:\DEV\CICE\output\ | Where-Object { $_.name -match "-b64" }) { Set-Location C:\DEV\Build_Tools\python; .\python.exe C:\DEV\CICE\cloak.py -d C:\DEV\CICE\output\$i -n $(-join ((65..90) + (97..122) | Get-Random -Count 8 | % {[char]$_})) -m base64 }
+
+build:
+  stage: build
+  script:
+    - foreach ($i in Get-ChildItem C:\DEV\CICE\output) { Set-Location C:\DEV\CICE\output\$i; C:\DEV\Build_Tools\nuget.exe restore .}
+    - foreach ($i in Get-ChildItem C:\DEV\CICE\output) { Set-Location "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\"; .\MSBuild.exe C:\DEV\CICE\output\$i /verbosity:minimal /property:Configuration=Release /p:OutputPath=$BUILD_DIR\exes\$i} 
+  artifacts:
+    paths:
+      - $BUILD_DIR\exes\*\*.exe
+
+test-defender:
+  stage: test-defender
+  variables:
+    BUILD_DIR: '${CI_PROJECT_DIR}'
+  script:
+    - Set-Location 'C:\DEV\Build_Tools\ThreatCheck\ThreatCheck\ThreatCheck\bin\Debug'
+    - foreach ($i in Get-ChildItem $BUILD_DIR\exes\*\*.exe) {Write-host 'Checking:'$i;.\ThreatCheck.exe -f $i | Tee-Object -Append -FilePath $BUILD_DIR\threatcheck_defender.txt}
+  artifacts:
+    paths:
+      - $BUILD_DIR\threatcheck_defender.txt
+
+execute:
+  stage: execute
+  variables:
+    BUILD_DIR: '${CI_PROJECT_DIR}'
+  script:
+    - foreach ($i in Get-ChildItem exes\*\*.exe) { Write-host "Executing" $i; Start-Process -FilePath $i; sleep 10 }
+
+elk:
+  tags:
+    - elk
+  stage: elk
+  script:
+    - bash deps/check.sh
+  artifacts:
+    paths:
+      - elk_out.txt
+
+
+
